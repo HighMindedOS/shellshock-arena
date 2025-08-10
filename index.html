@@ -1,0 +1,884 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shellshock Arena</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            overflow: hidden;
+        }
+
+        #gameContainer {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            padding: 20px;
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        }
+
+        #canvas {
+            background: #2a2a2a;
+            border-radius: 10px;
+            cursor: none;
+            display: none;
+        }
+
+        #menu {
+            color: white;
+            text-align: center;
+            padding: 40px;
+            min-width: 400px;
+        }
+
+        #menu h1 {
+            font-size: 48px;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+        }
+
+        #menu h2 {
+            font-size: 18px;
+            margin-bottom: 30px;
+            opacity: 0.8;
+        }
+
+        .menu-section {
+            margin: 20px 0;
+            padding: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 5px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 16px;
+        }
+
+        input[type="text"]::placeholder {
+            color: rgba(255, 255, 255, 0.6);
+        }
+
+        button {
+            width: 100%;
+            padding: 12px 20px;
+            margin: 10px 0;
+            border: none;
+            border-radius: 5px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: transform 0.3s, box-shadow 0.3s;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        #lobbyList {
+            max-height: 200px;
+            overflow-y: auto;
+            margin: 10px 0;
+        }
+
+        .lobby-item {
+            padding: 10px;
+            margin: 5px 0;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+
+        .lobby-item:hover {
+            background: rgba(255, 255, 255, 0.2);
+        }
+
+        #connectionStatus {
+            padding: 10px;
+            border-radius: 5px;
+            margin: 10px 0;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        .status-connected {
+            background: rgba(76, 175, 80, 0.3);
+            color: #4CAF50;
+        }
+
+        .status-disconnected {
+            background: rgba(244, 67, 54, 0.3);
+            color: #f44336;
+        }
+
+        .status-connecting {
+            background: rgba(255, 152, 0, 0.3);
+            color: #FF9800;
+        }
+
+        #gameUI {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            display: none;
+            pointer-events: none;
+        }
+
+        .player-info {
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px;
+            border-radius: 5px;
+            margin-bottom: 10px;
+        }
+
+        .health-bar {
+            width: 200px;
+            height: 20px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 10px;
+            overflow: hidden;
+            margin: 5px 0;
+        }
+
+        .health-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4CAF50, #8BC34A);
+            transition: width 0.3s;
+        }
+
+        .powerup-bar {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .powerup-item {
+            width: 60px;
+            height: 60px;
+            background: rgba(0, 0, 0, 0.7);
+            border: 2px solid rgba(255, 255, 255, 0.3);
+            border-radius: 5px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+        }
+
+        .powerup-item.available {
+            border-color: #4CAF50;
+            background: rgba(76, 175, 80, 0.2);
+        }
+
+        .powerup-item.used {
+            opacity: 0.3;
+        }
+
+        .powerup-key {
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .powerup-name {
+            font-size: 10px;
+            margin-top: 2px;
+        }
+
+        .points-display {
+            margin-top: 10px;
+            font-size: 18px;
+            font-weight: bold;
+        }
+
+        #gameOverlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            text-align: center;
+            display: none;
+            pointer-events: none;
+        }
+
+        #gameOverlay h2 {
+            font-size: 48px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.5);
+            margin-bottom: 20px;
+        }
+
+        #backToMenu {
+            pointer-events: all;
+        }
+    </style>
+</head>
+<body>
+    <div id="gameContainer">
+        <div id="menu">
+            <h1>🎯 Shellshock Arena</h1>
+            <h2>1v1 Multiplayer Battle</h2>
+            
+            <div id="connectionStatus" class="status-disconnected">
+                Nicht verbunden
+            </div>
+
+            <div class="menu-section">
+                <h3>Spielername</h3>
+                <input type="text" id="playerName" placeholder="Dein Name" maxlength="20">
+            </div>
+
+            <div class="menu-section">
+                <h3>Spiel erstellen</h3>
+                <button id="createLobby">Neue Lobby erstellen</button>
+            </div>
+
+            <div class="menu-section">
+                <h3>Spiel beitreten</h3>
+                <input type="text" id="lobbyCode" placeholder="Lobby-Code eingeben">
+                <button id="joinLobby">Mit Code beitreten</button>
+                
+                <h4 style="margin-top: 20px;">Offene Lobbys</h4>
+                <div id="lobbyList"></div>
+                <button id="refreshLobbies">Lobbys aktualisieren</button>
+            </div>
+
+            <div class="menu-section" id="waitingRoom" style="display: none;">
+                <h3>Warte auf Spieler...</h3>
+                <p>Lobby-Code: <strong id="currentLobbyCode"></strong></p>
+                <p id="playersInLobby">Spieler: 1/2</p>
+                <button id="leaveLobby">Lobby verlassen</button>
+            </div>
+        </div>
+
+        <canvas id="canvas"></canvas>
+
+        <div id="gameUI">
+            <div class="player-info">
+                <div>Du: <span id="yourName">Spieler 1</span></div>
+                <div class="health-bar">
+                    <div class="health-fill" id="yourHealth" style="width: 100%"></div>
+                </div>
+                <div class="points-display">Punkte: <span id="yourPoints">0</span></div>
+            </div>
+
+            <div class="player-info">
+                <div>Gegner: <span id="enemyName">Spieler 2</span></div>
+                <div class="health-bar">
+                    <div class="health-fill" id="enemyHealth" style="width: 100%"></div>
+                </div>
+            </div>
+
+            <div class="powerup-bar">
+                <div class="powerup-item" id="powerup1">
+                    <div class="powerup-key">1</div>
+                    <div class="powerup-name">Laser</div>
+                </div>
+                <div class="powerup-item" id="powerup2">
+                    <div class="powerup-key">2</div>
+                    <div class="powerup-name">Explosion</div>
+                </div>
+                <div class="powerup-item" id="powerup3">
+                    <div class="powerup-key">3</div>
+                    <div class="powerup-name">Schild</div>
+                </div>
+            </div>
+        </div>
+
+        <div id="gameOverlay">
+            <h2 id="gameResult"></h2>
+            <button id="backToMenu">Zurück zum Menü</button>
+        </div>
+    </div>
+
+    <script>
+        // Game Configuration
+        const config = {
+            canvas: {
+                width: 1000,
+                height: 600
+            },
+            player: {
+                size: 30,
+                speed: 200,
+                maxHealth: 100,
+                reloadTime: 1000
+            },
+            projectile: {
+                speed: 500,
+                damage: 5,
+                size: 5
+            },
+            powerups: {
+                laser: {
+                    damage: 15,
+                    cost: 20,
+                    color: '#00ff00'
+                },
+                explosive: {
+                    damage: 20,
+                    cost: 20,
+                    radius: 50,
+                    explosionDelay: 400,
+                    color: '#ff6600'
+                },
+                shield: {
+                    absorption: 20,
+                    cost: 20,
+                    duration: 10000,
+                    color: '#00ccff'
+                }
+            },
+            cover: {
+                health: 1,
+                color: '#555555'
+            },
+            server: {
+                url: 'ws://localhost:3000'
+            }
+        };
+
+        // Game State
+        let gameState = {
+            inGame: false,
+            players: {},
+            projectiles: [],
+            covers: [],
+            localPlayer: null,
+            enemyPlayer: null,
+            mousePos: { x: 0, y: 0 },
+            keys: {},
+            points: 0,
+            usedPowerups: new Set(),
+            shield: null,
+            lastUpdateTime: Date.now()
+        };
+
+        // WebSocket connection
+        let socket = null;
+        let reconnectAttempts = 0;
+        const maxReconnectAttempts = 5;
+
+        // Canvas and context
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        canvas.width = config.canvas.width;
+        canvas.height = config.canvas.height;
+
+        // Initialize WebSocket connection
+        function connectToServer() {
+            const statusEl = document.getElementById('connectionStatus');
+            statusEl.className = 'status-connecting';
+            statusEl.textContent = 'Verbinde...';
+
+            try {
+                socket = new WebSocket(config.server.url);
+
+                socket.onopen = () => {
+                    console.log('Connected to server');
+                    statusEl.className = 'status-connected';
+                    statusEl.textContent = 'Verbunden';
+                    reconnectAttempts = 0;
+
+                    const playerName = document.getElementById('playerName').value || 'Spieler';
+                    socket.send(JSON.stringify({
+                        type: 'setName',
+                        name: playerName
+                    }));
+                };
+
+                socket.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    handleServerMessage(data);
+                };
+
+                socket.onclose = () => {
+                    console.log('Disconnected from server');
+                    statusEl.className = 'status-disconnected';
+                    statusEl.textContent = 'Nicht verbunden';
+                    
+                    if (gameState.inGame) {
+                        endGame('Verbindung verloren');
+                    }
+
+                    if (reconnectAttempts < maxReconnectAttempts) {
+                        reconnectAttempts++;
+                        setTimeout(connectToServer, 2000);
+                    }
+                };
+
+                socket.onerror = (error) => {
+                    console.error('WebSocket error:', error);
+                    statusEl.className = 'status-disconnected';
+                    statusEl.textContent = 'Verbindungsfehler';
+                };
+            } catch (error) {
+                console.error('Failed to create WebSocket:', error);
+                statusEl.className = 'status-disconnected';
+                statusEl.textContent = 'Server nicht erreichbar';
+            }
+        }
+
+        // Handle server messages
+        function handleServerMessage(data) {
+            switch(data.type) {
+                case 'lobbyCreated':
+                    showWaitingRoom(data.lobbyCode);
+                    break;
+                case 'lobbyJoined':
+                    showWaitingRoom(data.lobbyCode);
+                    break;
+                case 'lobbyUpdate':
+                    updateWaitingRoom(data);
+                    break;
+                case 'gameStart':
+                    startGame(data);
+                    break;
+                case 'gameState':
+                    updateGameState(data.state);
+                    break;
+                case 'playerHit':
+                    handlePlayerHit(data);
+                    break;
+                case 'gameOver':
+                    endGame(data.winner === socket.id ? 'Gewonnen!' : 'Verloren!');
+                    break;
+                case 'lobbyList':
+                    updateLobbyList(data.lobbies);
+                    break;
+                case 'error':
+                    alert(data.message);
+                    break;
+            }
+        }
+
+        // UI Functions
+        function showWaitingRoom(lobbyCode) {
+            document.getElementById('currentLobbyCode').textContent = lobbyCode;
+            document.getElementById('waitingRoom').style.display = 'block';
+        }
+
+        function updateWaitingRoom(data) {
+            document.getElementById('playersInLobby').textContent = `Spieler: ${data.players}/2`;
+        }
+
+        function updateLobbyList(lobbies) {
+            const listEl = document.getElementById('lobbyList');
+            listEl.innerHTML = '';
+            
+            if (lobbies.length === 0) {
+                listEl.innerHTML = '<p style="opacity: 0.6;">Keine offenen Lobbys</p>';
+                return;
+            }
+
+            lobbies.forEach(lobby => {
+                const item = document.createElement('div');
+                item.className = 'lobby-item';
+                item.textContent = `${lobby.name} - ${lobby.players}/2 Spieler`;
+                item.onclick = () => joinLobby(lobby.code);
+                listEl.appendChild(item);
+            });
+        }
+
+        function joinLobby(code) {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                alert('Keine Verbindung zum Server');
+                return;
+            }
+
+            const playerName = document.getElementById('playerName').value || 'Spieler';
+            socket.send(JSON.stringify({
+                type: 'joinLobby',
+                lobbyCode: code,
+                playerName: playerName
+            }));
+        }
+
+        // Game Functions
+        function startGame(data) {
+            gameState.inGame = true;
+            gameState.localPlayer = data.localPlayer;
+            gameState.enemyPlayer = data.enemyPlayer;
+            gameState.covers = data.covers;
+            gameState.points = 0;
+            gameState.usedPowerups.clear();
+
+            document.getElementById('menu').style.display = 'none';
+            document.getElementById('canvas').style.display = 'block';
+            document.getElementById('gameUI').style.display = 'block';
+            
+            document.getElementById('yourName').textContent = gameState.localPlayer.name;
+            document.getElementById('enemyName').textContent = gameState.enemyPlayer.name;
+
+            updateUI();
+            gameLoop();
+        }
+
+        function updateGameState(state) {
+            if (state.players) {
+                gameState.players = state.players;
+                if (state.players[socket.id]) {
+                    gameState.localPlayer = state.players[socket.id];
+                }
+                Object.keys(state.players).forEach(id => {
+                    if (id !== socket.id) {
+                        gameState.enemyPlayer = state.players[id];
+                    }
+                });
+            }
+            if (state.projectiles) gameState.projectiles = state.projectiles;
+            if (state.covers) gameState.covers = state.covers;
+        }
+
+        function handlePlayerHit(data) {
+            if (data.playerId === socket.id) {
+                gameState.localPlayer.health = data.health;
+            } else {
+                gameState.enemyPlayer.health = data.health;
+                gameState.points += data.damage;
+            }
+            updateUI();
+        }
+
+        function endGame(result) {
+            gameState.inGame = false;
+            document.getElementById('gameResult').textContent = result;
+            document.getElementById('gameOverlay').style.display = 'block';
+        }
+
+        function updateUI() {
+            if (!gameState.localPlayer || !gameState.enemyPlayer) return;
+
+            document.getElementById('yourHealth').style.width = `${(gameState.localPlayer.health / config.player.maxHealth) * 100}%`;
+            document.getElementById('enemyHealth').style.width = `${(gameState.enemyPlayer.health / config.player.maxHealth) * 100}%`;
+            document.getElementById('yourPoints').textContent = gameState.points;
+
+            // Update powerup availability
+            [1, 2, 3].forEach(num => {
+                const el = document.getElementById(`powerup${num}`);
+                if (gameState.usedPowerups.has(num)) {
+                    el.className = 'powerup-item used';
+                } else if (gameState.points >= 20) {
+                    el.className = 'powerup-item available';
+                } else {
+                    el.className = 'powerup-item';
+                }
+            });
+        }
+
+        // Game Loop
+        function gameLoop() {
+            if (!gameState.inGame) return;
+
+            const currentTime = Date.now();
+            const deltaTime = (currentTime - gameState.lastUpdateTime) / 1000;
+            gameState.lastUpdateTime = currentTime;
+
+            handleInput(deltaTime);
+            render();
+
+            requestAnimationFrame(gameLoop);
+        }
+
+        function handleInput(deltaTime) {
+            if (!gameState.localPlayer || !socket || socket.readyState !== WebSocket.OPEN) return;
+
+            let dx = 0, dy = 0;
+            if (gameState.keys['w'] || gameState.keys['W']) dy = -1;
+            if (gameState.keys['s'] || gameState.keys['S']) dy = 1;
+            if (gameState.keys['a'] || gameState.keys['A']) dx = -1;
+            if (gameState.keys['d'] || gameState.keys['D']) dx = 1;
+
+            if (dx !== 0 || dy !== 0) {
+                const magnitude = Math.sqrt(dx * dx + dy * dy);
+                dx /= magnitude;
+                dy /= magnitude;
+
+                socket.send(JSON.stringify({
+                    type: 'move',
+                    dx: dx,
+                    dy: dy,
+                    deltaTime: deltaTime
+                }));
+            }
+
+            // Send aim update
+            socket.send(JSON.stringify({
+                type: 'aim',
+                mouseX: gameState.mousePos.x,
+                mouseY: gameState.mousePos.y
+            }));
+        }
+
+        function render() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Draw arena background
+            ctx.fillStyle = '#1a1a1a';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Draw grid
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+            ctx.lineWidth = 1;
+            for (let x = 0; x < canvas.width; x += 50) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+            }
+            for (let y = 0; y < canvas.height; y += 50) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+            }
+
+            // Draw covers
+            ctx.fillStyle = config.cover.color;
+            gameState.covers.forEach(cover => {
+                ctx.fillRect(cover.x, cover.y, cover.width, cover.height);
+            });
+
+            // Draw players
+            if (gameState.localPlayer) {
+                drawTank(gameState.localPlayer, '#4CAF50');
+                
+                // Draw reload indicator
+                if (gameState.localPlayer.reloading) {
+                    const progress = gameState.localPlayer.reloadProgress || 0;
+                    drawReloadIndicator(gameState.localPlayer.x, gameState.localPlayer.y, progress);
+                }
+
+                // Draw aiming line
+                drawAimLine(gameState.localPlayer);
+            }
+
+            if (gameState.enemyPlayer) {
+                drawTank(gameState.enemyPlayer, '#f44336');
+                
+                if (gameState.enemyPlayer.reloading) {
+                    const progress = gameState.enemyPlayer.reloadProgress || 0;
+                    drawReloadIndicator(gameState.enemyPlayer.x, gameState.enemyPlayer.y, progress);
+                }
+            }
+
+            // Draw projectiles
+            gameState.projectiles.forEach(proj => {
+                ctx.fillStyle = proj.color || '#ffff00';
+                ctx.beginPath();
+                ctx.arc(proj.x, proj.y, config.projectile.size, 0, Math.PI * 2);
+                ctx.fill();
+            });
+
+            // Draw crosshair
+            drawCrosshair();
+        }
+
+        function drawTank(player, color) {
+            ctx.save();
+            ctx.translate(player.x, player.y);
+            ctx.rotate(player.rotation || 0);
+
+            // Tank body
+            ctx.fillStyle = color;
+            ctx.fillRect(-config.player.size/2, -config.player.size/2, config.player.size, config.player.size);
+
+            // Tank barrel
+            ctx.fillStyle = '#333';
+            ctx.fillRect(0, -5, config.player.size, 10);
+
+            // Shield effect
+            if (player.shield && player.shield > 0) {
+                ctx.strokeStyle = config.powerups.shield.color;
+                ctx.lineWidth = 3;
+                ctx.globalAlpha = 0.5;
+                ctx.beginPath();
+                ctx.arc(0, 0, config.player.size, 0, Math.PI * 2);
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+            }
+
+            ctx.restore();
+        }
+
+        function drawReloadIndicator(x, y, progress) {
+            ctx.save();
+            ctx.globalAlpha = 0.6;
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(x, y, config.player.size + 10, -Math.PI/2, -Math.PI/2 + (Math.PI * 2 * progress));
+            ctx.stroke();
+            ctx.restore();
+        }
+
+        function drawAimLine(player) {
+            ctx.save();
+            ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(player.x, player.y);
+            ctx.lineTo(gameState.mousePos.x, gameState.mousePos.y);
+            ctx.stroke();
+
+            // Draw travel time
+            const distance = Math.sqrt(
+                Math.pow(gameState.mousePos.x - player.x, 2) + 
+                Math.pow(gameState.mousePos.y - player.y, 2)
+            );
+            const travelTime = (distance / config.projectile.speed).toFixed(2);
+            const midX = (player.x + gameState.mousePos.x) / 2;
+            const midY = (player.y + gameState.mousePos.y) / 2;
+
+            ctx.fillStyle = '#ffffff';
+            ctx.font = '14px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${travelTime}s`, midX, midY - 10);
+
+            ctx.restore();
+        }
+
+        function drawCrosshair() {
+            ctx.save();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 2;
+            
+            // Crosshair lines
+            ctx.beginPath();
+            ctx.moveTo(gameState.mousePos.x - 15, gameState.mousePos.y);
+            ctx.lineTo(gameState.mousePos.x - 5, gameState.mousePos.y);
+            ctx.moveTo(gameState.mousePos.x + 5, gameState.mousePos.y);
+            ctx.lineTo(gameState.mousePos.x + 15, gameState.mousePos.y);
+            ctx.moveTo(gameState.mousePos.x, gameState.mousePos.y - 15);
+            ctx.lineTo(gameState.mousePos.x, gameState.mousePos.y - 5);
+            ctx.moveTo(gameState.mousePos.x, gameState.mousePos.y + 5);
+            ctx.lineTo(gameState.mousePos.x, gameState.mousePos.y + 15);
+            ctx.stroke();
+
+            // Center dot
+            ctx.fillStyle = '#ff0000';
+            ctx.beginPath();
+            ctx.arc(gameState.mousePos.x, gameState.mousePos.y, 2, 0, Math.PI * 2);
+            ctx.fill();
+
+            ctx.restore();
+        }
+
+        // Event Listeners
+        document.getElementById('createLobby').addEventListener('click', () => {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                alert('Keine Verbindung zum Server');
+                return;
+            }
+
+            const playerName = document.getElementById('playerName').value || 'Spieler';
+            socket.send(JSON.stringify({
+                type: 'createLobby',
+                playerName: playerName
+            }));
+        });
+
+        document.getElementById('joinLobby').addEventListener('click', () => {
+            const code = document.getElementById('lobbyCode').value;
+            if (!code) {
+                alert('Bitte Lobby-Code eingeben');
+                return;
+            }
+            joinLobby(code);
+        });
+
+        document.getElementById('refreshLobbies').addEventListener('click', () => {
+            if (!socket || socket.readyState !== WebSocket.OPEN) {
+                alert('Keine Verbindung zum Server');
+                return;
+            }
+            socket.send(JSON.stringify({ type: 'getLobbies' }));
+        });
+
+        document.getElementById('leaveLobby').addEventListener('click', () => {
+            if (!socket || socket.readyState !== WebSocket.OPEN) return;
+            socket.send(JSON.stringify({ type: 'leaveLobby' }));
+            document.getElementById('waitingRoom').style.display = 'none';
+        });
+
+        document.getElementById('backToMenu').addEventListener('click', () => {
+            location.reload();
+        });
+
+        // Keyboard input
+        document.addEventListener('keydown', (e) => {
+            gameState.keys[e.key] = true;
+
+            if (!gameState.inGame) return;
+
+            // Powerups
+            if (e.key >= '1' && e.key <= '3') {
+                const powerupNum = parseInt(e.key);
+                if (!gameState.usedPowerups.has(powerupNum) && gameState.points >= 20) {
+                    socket.send(JSON.stringify({
+                        type: 'usePowerup',
+                        powerup: powerupNum
+                    }));
+                    gameState.usedPowerups.add(powerupNum);
+                    gameState.points -= 20;
+                    updateUI();
+                }
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            gameState.keys[e.key] = false;
+        });
+
+        // Mouse input
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            gameState.mousePos.x = e.clientX - rect.left;
+            gameState.mousePos.y = e.clientY - rect.top;
+        });
+
+        canvas.addEventListener('click', (e) => {
+            if (!gameState.inGame || !socket || socket.readyState !== WebSocket.OPEN) return;
+            
+            socket.send(JSON.stringify({
+                type: 'shoot',
+                targetX: gameState.mousePos.x,
+                targetY: gameState.mousePos.y
+            }));
+        });
+
+        // Initialize connection on load
+        window.addEventListener('load', () => {
+            connectToServer();
+        });
+    </script>
+</body>
+</html>
