@@ -1,0 +1,17 @@
+{
+  "name": "shellshock-arena-server",
+  "version": "1.0.0",
+  "description": "Multiplayer game server for Shellshock Arena",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "ws": "^8.16.0",
+    "uuid": "^9.0.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  }
+}
