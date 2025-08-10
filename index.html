@@ -238,6 +238,29 @@
         #backToMenu {
             pointer-events: all;
         }
+
+        .error-toast {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(244, 67, 54, 0.9);
+            color: white;
+            padding: 15px 20px;
+            border-radius: 5px;
+            animation: slideIn 0.3s ease;
+            z-index: 1000;
+        }
+
+        @keyframes slideIn {
+            from {
+                transform: translateX(100%);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
     </style>
 </head>
 <body>
@@ -340,14 +363,16 @@
                 laser: {
                     damage: 15,
                     cost: 20,
-                    color: '#00ff00'
+                    color: '#00ff00',
+                    instant: true
                 },
                 explosive: {
                     damage: 20,
                     cost: 20,
-                    radius: 50,
+                    radius: 80,
                     explosionDelay: 400,
-                    color: '#ff6600'
+                    color: '#ff6600',
+                    speed: 400
                 },
                 shield: {
                     absorption: 20,
@@ -357,34 +382,35 @@
                 }
             },
             cover: {
-                health: 1,
+                health: 100,
                 color: '#555555'
             },
             server: {
-                url: 'wss://shellshock-arena-production.up.railway.app'
+                url: 'ws://localhost:3000'
             }
         };
 
         // Game State
         let gameState = {
             inGame: false,
+            gameEnded: false,
             players: {},
             projectiles: [],
             covers: [],
-            localPlayer: null,
-            enemyPlayer: null,
+            explosions: [],
+            laserEffects: [],
+            localPlayerId: null,
             mousePos: { x: 0, y: 0 },
             keys: {},
-            points: 0,
-            usedPowerups: new Set(),
-            shield: null,
-            lastUpdateTime: Date.now()
+            lastUpdateTime: Date.now(),
+            pendingPowerup: null
         };
 
         // WebSocket connection
         let socket = null;
         let reconnectAttempts = 0;
         const maxReconnectAttempts = 5;
+        let reconnectTimeout = null;
 
         // Canvas and context
         const canvas = document.getElementById('canvas');
@@ -394,18 +420,24 @@
 
         // Initialize WebSocket connection
         function connectToServer() {
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+                reconnectTimeout = null;
+            }
+
             const statusEl = document.getElementById('connectionStatus');
             statusEl.className = 'status-connecting';
             statusEl.textContent = 'Verbinde...';
 
             try {
                 socket = new WebSocket(config.server.url);
-
+                
                 socket.onopen = () => {
                     console.log('Connected to server');
                     statusEl.className = 'status-connected';
                     statusEl.textContent = 'Verbunden';
                     reconnectAttempts = 0;
+                    gameState.localPlayerId = null;
 
                     const playerName = document.getElementById('playerName').value || 'Spieler';
                     socket.send(JSON.stringify({
@@ -424,13 +456,13 @@
                     statusEl.className = 'status-disconnected';
                     statusEl.textContent = 'Nicht verbunden';
                     
-                    if (gameState.inGame) {
+                    if (gameState.inGame && !gameState.gameEnded) {
                         endGame('Verbindung verloren');
                     }
 
-                    if (reconnectAttempts < maxReconnectAttempts) {
+                    if (reconnectAttempts < maxReconnectAttempts && !gameState.gameEnded) {
                         reconnectAttempts++;
-                        setTimeout(connectToServer, 2000);
+                        reconnectTimeout = setTimeout(connectToServer, 2000);
                     }
                 };
 
@@ -443,6 +475,11 @@
                 console.error('Failed to create WebSocket:', error);
                 statusEl.className = 'status-disconnected';
                 statusEl.textContent = 'Server nicht erreichbar';
+                
+                if (reconnectAttempts < maxReconnectAttempts) {
+                    reconnectAttempts++;
+                    reconnectTimeout = setTimeout(connectToServer, 3000);
+                }
             }
         }
 
@@ -452,29 +489,49 @@
                 case 'lobbyCreated':
                     showWaitingRoom(data.lobbyCode);
                     break;
+                    
                 case 'lobbyJoined':
                     showWaitingRoom(data.lobbyCode);
                     break;
+                    
                 case 'lobbyUpdate':
                     updateWaitingRoom(data);
                     break;
+                    
                 case 'gameStart':
                     startGame(data);
                     break;
+                    
                 case 'gameState':
                     updateGameState(data.state);
                     break;
+                    
                 case 'playerHit':
                     handlePlayerHit(data);
                     break;
+                    
                 case 'gameOver':
-                    endGame(data.winner === socket.id ? 'Gewonnen!' : 'Verloren!');
+                    handleGameOver(data);
                     break;
+                    
                 case 'lobbyList':
                     updateLobbyList(data.lobbies);
                     break;
+                    
+                case 'projectileCreated':
+                    addProjectile(data.projectile);
+                    break;
+                    
+                case 'instantProjectile':
+                    handleInstantProjectile(data.projectile);
+                    break;
+                    
+                case 'powerupConfirmed':
+                    handlePowerupConfirmed(data);
+                    break;
+                    
                 case 'error':
-                    alert(data.message);
+                    showError(data.message);
                     break;
             }
         }
@@ -509,7 +566,7 @@
 
         function joinLobby(code) {
             if (!socket || socket.readyState !== WebSocket.OPEN) {
-                alert('Keine Verbindung zum Server');
+                showError('Keine Verbindung zum Server');
                 return;
             }
 
@@ -521,71 +578,194 @@
             }));
         }
 
+        function showError(message) {
+            const toast = document.createElement('div');
+            toast.className = 'error-toast';
+            toast.textContent = message;
+            document.body.appendChild(toast);
+            
+            setTimeout(() => {
+                toast.remove();
+            }, 3000);
+        }
+
         // Game Functions
         function startGame(data) {
-            gameState.inGame = true;
-            gameState.localPlayer = data.localPlayer;
-            gameState.enemyPlayer = data.enemyPlayer;
-            gameState.covers = data.covers;
-            gameState.points = 0;
-            gameState.usedPowerups.clear();
+            // Reset game state
+            gameState = {
+                inGame: true,
+                gameEnded: false,
+                players: {},
+                projectiles: [],
+                covers: data.covers || [],
+                explosions: [],
+                laserEffects: [],
+                localPlayerId: data.localPlayer.id,
+                mousePos: { x: 0, y: 0 },
+                keys: {},
+                lastUpdateTime: Date.now(),
+                pendingPowerup: null
+            };
+
+            // Initialize players
+            gameState.players[data.localPlayer.id] = {
+                ...data.localPlayer,
+                isLocal: true,
+                usedPowerups: new Set(data.localPlayer.usedPowerups || [])
+            };
+            
+            gameState.players[data.enemyPlayer.id] = {
+                ...data.enemyPlayer,
+                isLocal: false,
+                usedPowerups: new Set()
+            };
 
             document.getElementById('menu').style.display = 'none';
             document.getElementById('canvas').style.display = 'block';
             document.getElementById('gameUI').style.display = 'block';
             
-            document.getElementById('yourName').textContent = gameState.localPlayer.name;
-            document.getElementById('enemyName').textContent = gameState.enemyPlayer.name;
+            document.getElementById('yourName').textContent = data.localPlayer.name;
+            document.getElementById('enemyName').textContent = data.enemyPlayer.name;
 
             updateUI();
             gameLoop();
         }
 
         function updateGameState(state) {
+            if (!gameState.inGame) return;
+
+            // Update players
             if (state.players) {
-                gameState.players = state.players;
-                if (state.players[socket.id]) {
-                    gameState.localPlayer = state.players[socket.id];
-                }
-                Object.keys(state.players).forEach(id => {
-                    if (id !== socket.id) {
-                        gameState.enemyPlayer = state.players[id];
+                Object.entries(state.players).forEach(([id, playerData]) => {
+                    if (gameState.players[id]) {
+                        // Preserve local flag and update rest
+                        const isLocal = gameState.players[id].isLocal;
+                        gameState.players[id] = {
+                            ...playerData,
+                            isLocal: isLocal,
+                            id: id,
+                            usedPowerups: new Set(playerData.usedPowerups || [])
+                        };
                     }
                 });
             }
-            if (state.projectiles) gameState.projectiles = state.projectiles;
-            if (state.covers) gameState.covers = state.covers;
+
+            // Update projectiles (but keep local ones for smooth feel)
+            if (state.projectiles) {
+                // Remove projectiles that don't exist on server anymore
+                const serverProjectileIds = new Set(state.projectiles.map(p => p.id));
+                gameState.projectiles = gameState.projectiles.filter(p => 
+                    p.isLocal || serverProjectileIds.has(p.id)
+                );
+                
+                // Add new server projectiles
+                state.projectiles.forEach(serverProj => {
+                    if (!gameState.projectiles.find(p => p.id === serverProj.id)) {
+                        gameState.projectiles.push(serverProj);
+                    }
+                });
+            }
+
+            // Update covers
+            if (state.covers) {
+                gameState.covers = state.covers;
+            }
+
+            // Handle explosions
+            if (state.explosions) {
+                state.explosions.forEach(explosion => {
+                    gameState.explosions.push({
+                        ...explosion,
+                        startTime: Date.now(),
+                        duration: 500
+                    });
+                });
+            }
+
+            updateUI();
         }
 
         function handlePlayerHit(data) {
-            if (data.playerId === socket.id) {
-                gameState.localPlayer.health = data.health;
-            } else {
-                gameState.enemyPlayer.health = data.health;
-                gameState.points += data.damage;
+            const hitPlayer = gameState.players[data.playerId];
+            const attacker = gameState.players[data.attackerId];
+            
+            if (hitPlayer) {
+                hitPlayer.health = data.health;
             }
+            
+            if (attacker && data.attackerId === gameState.localPlayerId) {
+                attacker.points = data.attackerPoints;
+            }
+            
             updateUI();
+        }
+
+        function handleGameOver(data) {
+            if (gameState.gameEnded) return; // Prevent duplicate handling
+            
+            gameState.gameEnded = true;
+            const result = data.winner === gameState.localPlayerId ? 'Gewonnen!' : 'Verloren!';
+            endGame(result);
         }
 
         function endGame(result) {
             gameState.inGame = false;
+            gameState.gameEnded = true;
             document.getElementById('gameResult').textContent = result;
             document.getElementById('gameOverlay').style.display = 'block';
         }
 
-        function updateUI() {
-            if (!gameState.localPlayer || !gameState.enemyPlayer) return;
+        function addProjectile(projectile) {
+            gameState.projectiles.push({
+                ...projectile,
+                createdAt: Date.now()
+            });
+        }
 
-            document.getElementById('yourHealth').style.width = `${(gameState.localPlayer.health / config.player.maxHealth) * 100}%`;
-            document.getElementById('enemyHealth').style.width = `${(gameState.enemyPlayer.health / config.player.maxHealth) * 100}%`;
-            document.getElementById('yourPoints').textContent = gameState.points;
+        function handleInstantProjectile(projectile) {
+            if (projectile.type === 'laser') {
+                gameState.laserEffects.push({
+                    startX: projectile.startX,
+                    startY: projectile.startY,
+                    endX: projectile.endX,
+                    endY: projectile.endY,
+                    color: projectile.color,
+                    startTime: Date.now(),
+                    duration: 200
+                });
+            }
+        }
+
+        function handlePowerupConfirmed(data) {
+            if (gameState.pendingPowerup === data.powerupNum) {
+                const localPlayer = gameState.players[gameState.localPlayerId];
+                if (localPlayer) {
+                    localPlayer.points = data.newPoints;
+                    localPlayer.usedPowerups = new Set(data.usedPowerups);
+                }
+                gameState.pendingPowerup = null;
+                updateUI();
+            }
+        }
+
+        function updateUI() {
+            const localPlayer = gameState.players[gameState.localPlayerId];
+            const enemyPlayer = Object.values(gameState.players).find(p => !p.isLocal);
+
+            if (!localPlayer || !enemyPlayer) return;
+
+            document.getElementById('yourHealth').style.width = 
+                `${(localPlayer.health / config.player.maxHealth) * 100}%`;
+            document.getElementById('enemyHealth').style.width = 
+                `${(enemyPlayer.health / config.player.maxHealth) * 100}%`;
+            document.getElementById('yourPoints').textContent = localPlayer.points || 0;
 
             // Update powerup availability
             [1, 2, 3].forEach(num => {
                 const el = document.getElementById(`powerup${num}`);
-                if (gameState.usedPowerups.has(num)) {
+                if (localPlayer.usedPowerups.has(num)) {
                     el.className = 'powerup-item used';
-                } else if (gameState.points >= 20) {
+                } else if (localPlayer.points >= 20) {
                     el.className = 'powerup-item available';
                 } else {
                     el.className = 'powerup-item';
@@ -602,13 +782,16 @@
             gameState.lastUpdateTime = currentTime;
 
             handleInput(deltaTime);
+            updateProjectiles(deltaTime);
+            updateEffects(deltaTime);
             render();
 
             requestAnimationFrame(gameLoop);
         }
 
         function handleInput(deltaTime) {
-            if (!gameState.localPlayer || !socket || socket.readyState !== WebSocket.OPEN) return;
+            const localPlayer = gameState.players[gameState.localPlayerId];
+            if (!localPlayer || !socket || socket.readyState !== WebSocket.OPEN) return;
 
             let dx = 0, dy = 0;
             if (gameState.keys['w'] || gameState.keys['W']) dy = -1;
@@ -635,6 +818,32 @@
                 mouseX: gameState.mousePos.x,
                 mouseY: gameState.mousePos.y
             }));
+        }
+
+        function updateProjectiles(deltaTime) {
+            gameState.projectiles = gameState.projectiles.filter(proj => {
+                if (!proj.isLocal) return true;
+                
+                proj.x += proj.vx * deltaTime;
+                proj.y += proj.vy * deltaTime;
+                
+                return proj.x >= 0 && proj.x <= config.canvas.width &&
+                       proj.y >= 0 && proj.y <= config.canvas.height;
+            });
+        }
+
+        function updateEffects(deltaTime) {
+            const now = Date.now();
+            
+            // Update explosions
+            gameState.explosions = gameState.explosions.filter(explosion => 
+                now - explosion.startTime < explosion.duration
+            );
+            
+            // Update laser effects
+            gameState.laserEffects = gameState.laserEffects.filter(laser => 
+                now - laser.startTime < laser.duration
+            );
         }
 
         function render() {
@@ -664,38 +873,93 @@
             ctx.fillStyle = config.cover.color;
             gameState.covers.forEach(cover => {
                 ctx.fillRect(cover.x, cover.y, cover.width, cover.height);
+                
+                // Draw damage indicator
+                if (cover.health && cover.health < 100) {
+                    ctx.fillStyle = `rgba(255, 0, 0, ${1 - cover.health / 100})`;
+                    ctx.fillRect(cover.x, cover.y, cover.width, cover.height);
+                    ctx.fillStyle = config.cover.color;
+                }
+            });
+
+            // Draw explosions
+            gameState.explosions.forEach(explosion => {
+                const age = (Date.now() - explosion.startTime) / explosion.duration;
+                const radius = explosion.radius * (1 + age * 0.5);
+                const alpha = 1 - age;
+                
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                
+                // Outer circle
+                ctx.strokeStyle = '#ff6600';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(explosion.x, explosion.y, radius, 0, Math.PI * 2);
+                ctx.stroke();
+                
+                // Inner glow
+                const gradient = ctx.createRadialGradient(
+                    explosion.x, explosion.y, 0,
+                    explosion.x, explosion.y, radius
+                );
+                gradient.addColorStop(0, `rgba(255, 102, 0, ${alpha * 0.5})`);
+                gradient.addColorStop(1, 'rgba(255, 102, 0, 0)');
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(explosion.x, explosion.y, radius, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.restore();
+            });
+
+            // Draw laser effects
+            gameState.laserEffects.forEach(laser => {
+                const age = (Date.now() - laser.startTime) / laser.duration;
+                const alpha = 1 - age;
+                
+                ctx.save();
+                ctx.globalAlpha = alpha;
+                ctx.strokeStyle = laser.color;
+                ctx.lineWidth = 3 + (1 - age) * 5;
+                ctx.shadowBlur = 20;
+                ctx.shadowColor = laser.color;
+                
+                ctx.beginPath();
+                ctx.moveTo(laser.startX, laser.startY);
+                ctx.lineTo(laser.endX, laser.endY);
+                ctx.stroke();
+                
+                ctx.restore();
             });
 
             // Draw players
-            if (gameState.localPlayer) {
-                drawTank(gameState.localPlayer, '#4CAF50');
+            Object.values(gameState.players).forEach(player => {
+                const color = player.isLocal ? '#4CAF50' : '#f44336';
+                drawTank(player, color);
                 
                 // Draw reload indicator
-                if (gameState.localPlayer.reloading) {
-                    const progress = gameState.localPlayer.reloadProgress || 0;
-                    drawReloadIndicator(gameState.localPlayer.x, gameState.localPlayer.y, progress);
+                if (player.reloading && player.reloadProgress !== undefined) {
+                    drawReloadIndicator(player.x, player.y, player.reloadProgress);
                 }
-
-                // Draw aiming line
-                drawAimLine(gameState.localPlayer);
-            }
-
-            if (gameState.enemyPlayer) {
-                drawTank(gameState.enemyPlayer, '#f44336');
-                
-                if (gameState.enemyPlayer.reloading) {
-                    const progress = gameState.enemyPlayer.reloadProgress || 0;
-                    drawReloadIndicator(gameState.enemyPlayer.x, gameState.enemyPlayer.y, progress);
-                }
-            }
+            });
 
             // Draw projectiles
             gameState.projectiles.forEach(proj => {
                 ctx.fillStyle = proj.color || '#ffff00';
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = proj.color || '#ffff00';
                 ctx.beginPath();
                 ctx.arc(proj.x, proj.y, config.projectile.size, 0, Math.PI * 2);
                 ctx.fill();
+                ctx.shadowBlur = 0;
             });
+
+            // Draw aiming line for local player
+            const localPlayer = gameState.players[gameState.localPlayerId];
+            if (localPlayer) {
+                drawAimLine(localPlayer);
+            }
 
             // Draw crosshair
             drawCrosshair();
@@ -708,19 +972,25 @@
 
             // Tank body
             ctx.fillStyle = color;
-            ctx.fillRect(-config.player.size/2, -config.player.size/2, config.player.size, config.player.size);
+            ctx.fillRect(-config.player.size/2, -config.player.size/2, 
+                        config.player.size, config.player.size);
 
             // Tank barrel
             ctx.fillStyle = '#333';
             ctx.fillRect(0, -5, config.player.size, 10);
 
+            // Tank details
+            ctx.fillStyle = '#222';
+            ctx.fillRect(-config.player.size/2 + 5, -config.player.size/2 + 5, 
+                        config.player.size - 10, config.player.size - 10);
+
             // Shield effect
             if (player.shield && player.shield > 0) {
                 ctx.strokeStyle = config.powerups.shield.color;
                 ctx.lineWidth = 3;
-                ctx.globalAlpha = 0.5;
+                ctx.globalAlpha = 0.5 + Math.sin(Date.now() * 0.005) * 0.2;
                 ctx.beginPath();
-                ctx.arc(0, 0, config.player.size, 0, Math.PI * 2);
+                ctx.arc(0, 0, config.player.size * 1.2, 0, Math.PI * 2);
                 ctx.stroke();
                 ctx.globalAlpha = 1;
             }
@@ -733,8 +1003,10 @@
             ctx.globalAlpha = 0.6;
             ctx.strokeStyle = '#ffffff';
             ctx.lineWidth = 3;
+            ctx.lineCap = 'round';
             ctx.beginPath();
-            ctx.arc(x, y, config.player.size + 10, -Math.PI/2, -Math.PI/2 + (Math.PI * 2 * progress));
+            ctx.arc(x, y, config.player.size + 10, 
+                   -Math.PI/2, -Math.PI/2 + (Math.PI * 2 * progress));
             ctx.stroke();
             ctx.restore();
         }
@@ -749,12 +1021,25 @@
             ctx.lineTo(gameState.mousePos.x, gameState.mousePos.y);
             ctx.stroke();
 
-            // Draw travel time
+            // Calculate and draw travel time
             const distance = Math.sqrt(
                 Math.pow(gameState.mousePos.x - player.x, 2) + 
                 Math.pow(gameState.mousePos.y - player.y, 2)
             );
-            const travelTime = (distance / config.projectile.speed).toFixed(2);
+            
+            // Determine projectile speed based on next shot type
+            let projectileSpeed = config.projectile.speed;
+            if (gameState.pendingPowerup === 1) {
+                // Laser is instant
+                projectileSpeed = Infinity;
+            } else if (gameState.pendingPowerup === 2) {
+                // Explosive is slower
+                projectileSpeed = config.powerups.explosive.speed;
+            }
+            
+            const travelTime = projectileSpeed === Infinity ? 
+                '0.00' : (distance / projectileSpeed).toFixed(2);
+            
             const midX = (player.x + gameState.mousePos.x) / 2;
             const midY = (player.y + gameState.mousePos.y) / 2;
 
@@ -795,7 +1080,7 @@
         // Event Listeners
         document.getElementById('createLobby').addEventListener('click', () => {
             if (!socket || socket.readyState !== WebSocket.OPEN) {
-                alert('Keine Verbindung zum Server');
+                showError('Keine Verbindung zum Server');
                 return;
             }
 
@@ -809,7 +1094,7 @@
         document.getElementById('joinLobby').addEventListener('click', () => {
             const code = document.getElementById('lobbyCode').value;
             if (!code) {
-                alert('Bitte Lobby-Code eingeben');
+                showError('Bitte Lobby-Code eingeben');
                 return;
             }
             joinLobby(code);
@@ -817,7 +1102,7 @@
 
         document.getElementById('refreshLobbies').addEventListener('click', () => {
             if (!socket || socket.readyState !== WebSocket.OPEN) {
-                alert('Keine Verbindung zum Server');
+                showError('Keine Verbindung zum Server');
                 return;
             }
             socket.send(JSON.stringify({ type: 'getLobbies' }));
@@ -842,14 +1127,16 @@
             // Powerups
             if (e.key >= '1' && e.key <= '3') {
                 const powerupNum = parseInt(e.key);
-                if (!gameState.usedPowerups.has(powerupNum) && gameState.points >= 20) {
+                const localPlayer = gameState.players[gameState.localPlayerId];
+                
+                if (localPlayer && !localPlayer.usedPowerups.has(powerupNum) && 
+                    localPlayer.points >= 20 && !gameState.pendingPowerup) {
+                    
+                    gameState.pendingPowerup = powerupNum;
                     socket.send(JSON.stringify({
                         type: 'usePowerup',
                         powerup: powerupNum
                     }));
-                    gameState.usedPowerups.add(powerupNum);
-                    gameState.points -= 20;
-                    updateUI();
                 }
             }
         });
@@ -868,16 +1155,29 @@
         canvas.addEventListener('click', (e) => {
             if (!gameState.inGame || !socket || socket.readyState !== WebSocket.OPEN) return;
             
-            socket.send(JSON.stringify({
-                type: 'shoot',
-                targetX: gameState.mousePos.x,
-                targetY: gameState.mousePos.y
-            }));
+            const localPlayer = gameState.players[gameState.localPlayerId];
+            if (localPlayer && !localPlayer.reloading) {
+                socket.send(JSON.stringify({
+                    type: 'shoot',
+                    targetX: gameState.mousePos.x,
+                    targetY: gameState.mousePos.y
+                }));
+            }
         });
 
         // Initialize connection on load
         window.addEventListener('load', () => {
             connectToServer();
+        });
+
+        // Cleanup on unload
+        window.addEventListener('beforeunload', () => {
+            if (reconnectTimeout) {
+                clearTimeout(reconnectTimeout);
+            }
+            if (socket && socket.readyState === WebSocket.OPEN) {
+                socket.close();
+            }
         });
     </script>
 </body>
