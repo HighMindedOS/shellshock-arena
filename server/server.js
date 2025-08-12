@@ -10,21 +10,22 @@ const wss = new WebSocket.Server({ server });
 // Game Configuration
 const gameConfig = {
     arena: {
-        width: 1000,
-        height: 600
+        width: 2000,
+        height: 2000
     },
     player: {
         size: 30,
-        speed: 200,
+        speed: 250,
         maxHealth: 100,
         reloadTime: 1000,
+        viewDistance: 600,
         startPositions: [
-            { x: 100, y: 300 },
-            { x: 900, y: 300 }
+            { x: 200, y: 1000 },
+            { x: 1800, y: 1000 }
         ]
     },
     projectile: {
-        speed: 500,
+        speed: 600,
         damage: 5,
         size: 5
     },
@@ -32,14 +33,14 @@ const gameConfig = {
         laser: { 
             damage: 15, 
             cost: 20,
-            instant: true  // Laser is instant hit
+            instant: true
         },
         explosive: { 
             damage: 20, 
             cost: 20, 
-            radius: 80, 
+            radius: 100, 
             explosionDelay: 400,
-            speed: 400  // Slower than normal projectile
+            speed: 450
         },
         shield: { 
             absorption: 20, 
@@ -49,16 +50,121 @@ const gameConfig = {
     },
     cover: {
         layouts: [
-            { x: 200, y: 200, width: 60, height: 200, id: 'cover1' },
-            { x: 800, y: 200, width: 60, height: 200, id: 'cover2' },
-            { x: 400, y: 100, width: 200, height: 60, id: 'cover3' },
-            { x: 400, y: 440, width: 200, height: 60, id: 'cover4' },
-            { x: 450, y: 250, width: 100, height: 100, id: 'cover5' }
+            // Central area
+            { x: 900, y: 900, width: 200, height: 200, id: 'center' },
+            
+            // Corridors
+            { x: 300, y: 400, width: 60, height: 400, id: 'corridor1' },
+            { x: 1640, y: 400, width: 60, height: 400, id: 'corridor2' },
+            { x: 300, y: 1200, width: 60, height: 400, id: 'corridor3' },
+            { x: 1640, y: 1200, width: 60, height: 400, id: 'corridor4' },
+            
+            // Scattered cover
+            { x: 600, y: 600, width: 100, height: 100, id: 'cover1' },
+            { x: 1300, y: 600, width: 100, height: 100, id: 'cover2' },
+            { x: 600, y: 1300, width: 100, height: 100, id: 'cover3' },
+            { x: 1300, y: 1300, width: 100, height: 100, id: 'cover4' },
+            
+            // Side walls
+            { x: 500, y: 200, width: 300, height: 60, id: 'wall1' },
+            { x: 1200, y: 200, width: 300, height: 60, id: 'wall2' },
+            { x: 500, y: 1740, width: 300, height: 60, id: 'wall3' },
+            { x: 1200, y: 1740, width: 300, height: 60, id: 'wall4' },
+            
+            // Maze-like structures
+            { x: 800, y: 500, width: 60, height: 200, id: 'maze1' },
+            { x: 1140, y: 500, width: 60, height: 200, id: 'maze2' },
+            { x: 800, y: 1300, width: 60, height: 200, id: 'maze3' },
+            { x: 1140, y: 1300, width: 60, height: 200, id: 'maze4' }
         ]
     }
 };
 
-// Game State Management
+// Game Statistics Tracking
+class GameStatistics {
+    constructor() {
+        this.players = new Map();
+    }
+
+    initPlayer(playerId) {
+        this.players.set(playerId, {
+            totalDamageDealt: 0,
+            totalDamageTaken: 0,
+            shotsHit: 0,
+            shotsFired: 0,
+            powerupsUsed: 0,
+            distanceTraveled: 0,
+            timeAlive: Date.now(),
+            kills: 0,
+            deaths: 0,
+            lastPosition: null
+        });
+    }
+
+    recordShot(playerId) {
+        const stats = this.players.get(playerId);
+        if (stats) stats.shotsFired++;
+    }
+
+    recordHit(playerId, damage) {
+        const stats = this.players.get(playerId);
+        if (stats) {
+            stats.shotsHit++;
+            stats.totalDamageDealt += damage;
+        }
+    }
+
+    recordDamageTaken(playerId, damage) {
+        const stats = this.players.get(playerId);
+        if (stats) stats.totalDamageTaken += damage;
+    }
+
+    recordPowerupUse(playerId) {
+        const stats = this.players.get(playerId);
+        if (stats) stats.powerupsUsed++;
+    }
+
+    recordMovement(playerId, x, y) {
+        const stats = this.players.get(playerId);
+        if (stats) {
+            if (stats.lastPosition) {
+                const distance = Math.sqrt(
+                    Math.pow(x - stats.lastPosition.x, 2) + 
+                    Math.pow(y - stats.lastPosition.y, 2)
+                );
+                stats.distanceTraveled += distance;
+            }
+            stats.lastPosition = { x, y };
+        }
+    }
+
+    recordKill(playerId) {
+        const stats = this.players.get(playerId);
+        if (stats) stats.kills++;
+    }
+
+    recordDeath(playerId) {
+        const stats = this.players.get(playerId);
+        if (stats) {
+            stats.deaths++;
+            stats.timeAlive = Date.now() - stats.timeAlive;
+        }
+    }
+
+    getStats() {
+        const result = {};
+        for (let [id, stats] of this.players) {
+            result[id] = {
+                ...stats,
+                accuracy: stats.shotsFired > 0 ? 
+                    Math.round((stats.shotsHit / stats.shotsFired) * 100) : 0
+            };
+        }
+        return result;
+    }
+}
+
+// Game Room Management
 class GameRoom {
     constructor(code, host) {
         this.code = code;
@@ -72,6 +178,10 @@ class GameRoom {
             lastUpdate: Date.now()
         };
         this.updateInterval = null;
+        this.stats = new GameStatistics();
+        this.matchStartTime = null;
+        this.matchEndTime = null;
+        this.rematchVotes = new Set();
     }
 
     addPlayer(id, ws, name) {
@@ -95,9 +205,11 @@ class GameRoom {
             shield: 0,
             velocity: { x: 0, y: 0 },
             usedPowerups: new Set(),
-            nextShotType: null
+            nextShotType: null,
+            visible: true
         });
 
+        this.stats.initPlayer(id);
         return true;
     }
 
@@ -113,8 +225,13 @@ class GameRoom {
         if (this.players.size !== 2) return false;
         
         this.gameState.started = true;
+        this.matchStartTime = Date.now();
+        this.rematchVotes.clear();
         
-        // Send game start to all players with full state
+        // Reset covers
+        this.gameState.covers = gameConfig.cover.layouts.map(c => ({...c, health: 100}));
+        
+        // Send game start to all players
         const playerArray = Array.from(this.players.values());
         playerArray.forEach((player, index) => {
             const otherPlayer = playerArray[1 - index];
@@ -138,7 +255,11 @@ class GameRoom {
                     health: otherPlayer.health,
                     rotation: otherPlayer.rotation
                 },
-                covers: this.gameState.covers
+                covers: this.gameState.covers,
+                arenaSize: {
+                    width: gameConfig.arena.width,
+                    height: gameConfig.arena.height
+                }
             }));
         });
 
@@ -147,14 +268,65 @@ class GameRoom {
         return true;
     }
 
+    checkLineOfSight(x1, y1, x2, y2) {
+        // Check if line of sight is blocked by covers
+        for (let cover of this.gameState.covers) {
+            if (this.lineIntersectsRect(x1, y1, x2, y2, cover)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    lineIntersectsRect(x1, y1, x2, y2, rect) {
+        // Check if line intersects with any of the rectangle's edges
+        const lines = [
+            {x1: rect.x, y1: rect.y, x2: rect.x + rect.width, y2: rect.y},
+            {x1: rect.x, y1: rect.y, x2: rect.x, y2: rect.y + rect.height},
+            {x1: rect.x + rect.width, y1: rect.y, x2: rect.x + rect.width, y2: rect.y + rect.height},
+            {x1: rect.x, y1: rect.y + rect.height, x2: rect.x + rect.width, y2: rect.y + rect.height}
+        ];
+        
+        for (let line of lines) {
+            if (this.lineIntersectsLine(x1, y1, x2, y2, line.x1, line.y1, line.x2, line.y2)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    lineIntersectsLine(x1, y1, x2, y2, x3, y3, x4, y4) {
+        const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+        if (Math.abs(denom) < 0.0001) return false;
+        
+        const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+        const u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom;
+        
+        return t >= 0 && t <= 1 && u >= 0 && u <= 1;
+    }
+
     update() {
         const now = Date.now();
         const deltaTime = (now - this.gameState.lastUpdate) / 1000;
         this.gameState.lastUpdate = now;
 
+        // Update visibility for each player
+        const playerArray = Array.from(this.players.values());
+        if (playerArray.length === 2) {
+            const [player1, player2] = playerArray;
+            
+            // Check line of sight between players
+            const hasLineOfSight = this.checkLineOfSight(
+                player1.x, player1.y, 
+                player2.x, player2.y
+            );
+            
+            player1.visibleToEnemy = hasLineOfSight;
+            player2.visibleToEnemy = hasLineOfSight;
+        }
+
         // Update projectiles
         this.gameState.projectiles = this.gameState.projectiles.filter(proj => {
-            // Skip instant projectiles (laser)
             if (proj.instant) return false;
             
             proj.x += proj.vx * deltaTime;
@@ -185,6 +357,7 @@ class GameRoom {
                         this.explode(proj.x, proj.y, proj.ownerId);
                     } else {
                         this.hitPlayer(id, proj.damage, proj.ownerId);
+                        this.stats.recordHit(proj.ownerId, proj.damage);
                     }
                     return false;
                 }
@@ -216,36 +389,61 @@ class GameRoom {
             }
         }
 
-        // Send state update
-        this.broadcast({
-            type: 'gameState',
-            state: {
-                players: Object.fromEntries(
-                    Array.from(this.players.entries()).map(([id, p]) => [
-                        id,
-                        {
-                            x: p.x,
-                            y: p.y,
-                            rotation: p.rotation,
-                            health: p.health,
-                            shield: p.shield,
-                            reloading: p.reloading,
-                            reloadProgress: p.reloadProgress,
-                            points: p.points,
-                            usedPowerups: Array.from(p.usedPowerups)
-                        }
-                    ])
-                ),
-                projectiles: this.gameState.projectiles.map(p => ({
-                    x: p.x,
-                    y: p.y,
-                    type: p.type,
-                    color: p.color
-                })),
-                covers: this.gameState.covers,
-                explosions: this.gameState.explosions
+        // Send personalized state updates to each player
+        for (let [id, player] of this.players) {
+            const otherPlayers = {};
+            
+            for (let [otherId, otherPlayer] of this.players) {
+                if (otherId !== id) {
+                    // Only send enemy data if visible
+                    if (otherPlayer.visibleToEnemy) {
+                        otherPlayers[otherId] = {
+                            x: otherPlayer.x,
+                            y: otherPlayer.y,
+                            rotation: otherPlayer.rotation,
+                            health: otherPlayer.health,
+                            shield: otherPlayer.shield,
+                            reloading: otherPlayer.reloading,
+                            reloadProgress: otherPlayer.reloadProgress,
+                            visible: true
+                        };
+                    } else {
+                        otherPlayers[otherId] = {
+                            visible: false
+                        };
+                    }
+                } else {
+                    // Always send own data
+                    otherPlayers[id] = {
+                        x: player.x,
+                        y: player.y,
+                        rotation: player.rotation,
+                        health: player.health,
+                        shield: player.shield,
+                        reloading: player.reloading,
+                        reloadProgress: player.reloadProgress,
+                        points: player.points,
+                        usedPowerups: Array.from(player.usedPowerups),
+                        visible: true
+                    };
+                }
             }
-        });
+
+            player.ws.send(JSON.stringify({
+                type: 'gameState',
+                state: {
+                    players: otherPlayers,
+                    projectiles: this.gameState.projectiles.map(p => ({
+                        x: p.x,
+                        y: p.y,
+                        type: p.type,
+                        color: p.color
+                    })),
+                    covers: this.gameState.covers,
+                    explosions: this.gameState.explosions
+                }
+            }));
+        }
 
         // Clear explosions after sending
         this.gameState.explosions = [];
@@ -273,7 +471,10 @@ class GameRoom {
                     break;
                 }
             }
-            if (canMoveX) player.x = newX;
+            if (canMoveX) {
+                player.x = newX;
+                this.stats.recordMovement(playerId, newX, player.y);
+            }
         }
 
         // Check Y movement separately for sliding collision
@@ -288,7 +489,10 @@ class GameRoom {
                     break;
                 }
             }
-            if (canMoveY) player.y = newY;
+            if (canMoveY) {
+                player.y = newY;
+                this.stats.recordMovement(playerId, player.x, newY);
+            }
         }
 
         // Update rotation based on movement direction
@@ -319,6 +523,9 @@ class GameRoom {
         player.lastShot = now;
         player.reloading = true;
         player.reloadProgress = 0;
+        
+        // Record shot
+        this.stats.recordShot(playerId);
 
         const angle = Math.atan2(targetY - player.y, targetX - player.x);
         
@@ -326,7 +533,7 @@ class GameRoom {
         if (powerupType === 'laser') {
             this.shootLaser(player, angle, targetX, targetY);
             
-            // Send immediate projectile feedback for visual
+            // Send immediate projectile feedback
             this.broadcast({
                 type: 'instantProjectile',
                 projectile: {
@@ -369,7 +576,9 @@ class GameRoom {
                     vx: projectile.vx,
                     vy: projectile.vy,
                     type: projectile.type,
-                    color: projectile.color
+                    color: projectile.color,
+                    targetX: targetX,
+                    targetY: targetY
                 }
             });
         }
@@ -417,6 +626,7 @@ class GameRoom {
                 
                 if (distance <= gameConfig.player.size / 2) {
                     this.hitPlayer(id, gameConfig.powerups.laser.damage, player.id);
+                    this.stats.recordHit(player.id, gameConfig.powerups.laser.damage);
                     return;
                 }
             }
@@ -440,6 +650,7 @@ class GameRoom {
         // Deduct points and mark as used
         player.points -= 20;
         player.usedPowerups.add(powerupNum);
+        this.stats.recordPowerupUse(playerId);
 
         let success = true;
         switch(powerupNum) {
@@ -472,6 +683,54 @@ class GameRoom {
         }
 
         return { success };
+    }
+
+    handleRematchVote(playerId) {
+        if (!this.gameState.started || !this.matchEndTime) {
+            return { success: false, error: 'No game to rematch' };
+        }
+
+        this.rematchVotes.add(playerId);
+
+        // Notify all players about rematch vote
+        this.broadcast({
+            type: 'rematchVote',
+            votes: this.rematchVotes.size,
+            required: 2
+        });
+
+        // If both players voted, start new game
+        if (this.rematchVotes.size === 2) {
+            // Reset players
+            const playerArray = Array.from(this.players.values());
+            playerArray.forEach((player, index) => {
+                const position = gameConfig.player.startPositions[index];
+                player.x = position.x;
+                player.y = position.y;
+                player.health = gameConfig.player.maxHealth;
+                player.points = 0;
+                player.shield = 0;
+                player.usedPowerups.clear();
+                player.nextShotType = null;
+                player.reloading = false;
+                player.lastShot = 0;
+            });
+
+            // Reset stats
+            this.stats = new GameStatistics();
+            playerArray.forEach(player => {
+                this.stats.initPlayer(player.id);
+            });
+
+            // Clear projectiles
+            this.gameState.projectiles = [];
+            this.gameState.explosions = [];
+
+            // Start new game
+            this.startGame();
+        }
+
+        return { success: true };
     }
 
     getProjectileDamage(type) {
@@ -508,13 +767,15 @@ class GameRoom {
                 );
                 if (damage > 0) {
                     this.hitPlayer(id, damage, ownerId);
+                    if (id !== ownerId) {
+                        this.stats.recordHit(ownerId, damage);
+                    }
                 }
             }
         }
 
-        // Damage or destroy covers that overlap with explosion
+        // Damage or destroy covers
         this.gameState.covers = this.gameState.covers.filter(cover => {
-            // Check if explosion circle overlaps with cover rectangle
             const closestX = Math.max(cover.x, Math.min(x, cover.x + cover.width));
             const closestY = Math.max(cover.y, Math.min(y, cover.y + cover.height));
             const distance = Math.sqrt(
@@ -523,8 +784,6 @@ class GameRoom {
             );
             
             if (distance < radius) {
-                // Cover is hit - for now we destroy it completely
-                // Could implement partial damage here
                 return false;
             }
             return true;
@@ -547,12 +806,15 @@ class GameRoom {
         player.health -= actualDamage;
         player.health = Math.max(0, player.health);
         
+        // Record statistics
+        this.stats.recordDamageTaken(playerId, actualDamage);
+        
         // Award points to attacker
         if (attacker && attackerId !== playerId) {
             attacker.points += actualDamage;
         }
 
-        // Send hit notification with updated points
+        // Send hit notification
         this.broadcast({
             type: 'playerHit',
             playerId: playerId,
@@ -564,6 +826,8 @@ class GameRoom {
 
         // Check for game over
         if (player.health <= 0) {
+            this.stats.recordDeath(playerId);
+            if (attackerId) this.stats.recordKill(attackerId);
             this.endGame(attackerId);
         }
     }
@@ -574,9 +838,18 @@ class GameRoom {
             this.updateInterval = null;
         }
         
+        this.matchEndTime = Date.now();
+        const matchDuration = Math.floor((this.matchEndTime - this.matchStartTime) / 1000);
+        
+        // Get final statistics
+        const finalStats = this.stats.getStats();
+        
+        // Send game over with statistics
         this.broadcast({
             type: 'gameOver',
             winner: winnerId,
+            matchDuration: matchDuration,
+            statistics: finalStats,
             finalState: {
                 players: Object.fromEntries(
                     Array.from(this.players.entries()).map(([id, p]) => [
@@ -698,7 +971,7 @@ wss.on('connection', (ws) => {
                         lobbyCode: data.lobbyCode
                     }));
                     
-                    // Notify all players in room
+                    // Notify all players
                     joinRoom.broadcast({
                         type: 'lobbyUpdate',
                         players: joinRoom.players.size
@@ -772,6 +1045,12 @@ wss.on('connection', (ws) => {
                         }
                     }
                     break;
+
+                case 'rematchVote':
+                    if (currentRoom) {
+                        currentRoom.handleRematchVote(playerId);
+                    }
+                    break;
             }
         } catch (error) {
             console.error('Error handling message:', error);
@@ -823,6 +1102,7 @@ function generateLobbyCode() {
 server.listen(PORT, () => {
     console.log(`Shellshock Arena Server running on port ${PORT}`);
     console.log(`WebSocket server ready for connections`);
+    console.log(`Arena size: ${gameConfig.arena.width}x${gameConfig.arena.height}`);
 });
 
 // Graceful shutdown
