@@ -18,10 +18,13 @@ const gameConfig = {
         speed: 250,
         maxHealth: 100,
         reloadTime: 1000,
-        viewDistance: 600,
+        viewDistance: 400,
+        viewAngle: Math.PI / 2, // 90 degrees view cone
+        acceleration: 800,
+        friction: 0.9,
         startPositions: [
-            { x: 200, y: 1000 },
-            { x: 1800, y: 1000 }
+            { x: 1000, y: 1700, rotation: -Math.PI/2 }, // Player 1 starts at bottom, facing up
+            { x: 1000, y: 300, rotation: Math.PI/2 }    // Player 2 starts at top, facing down
         ]
     },
     projectile: {
@@ -196,7 +199,7 @@ class GameRoom {
             name: name,
             x: position.x,
             y: position.y,
-            rotation: playerIndex === 0 ? 0 : Math.PI,
+            rotation: position.rotation,
             health: gameConfig.player.maxHealth,
             points: 0,
             lastShot: 0,
@@ -206,7 +209,8 @@ class GameRoom {
             velocity: { x: 0, y: 0 },
             usedPowerups: new Set(),
             nextShotType: null,
-            visible: true
+            visible: true,
+            playerIndex: playerIndex
         });
 
         this.stats.initPlayer(id);
@@ -231,8 +235,24 @@ class GameRoom {
         // Reset covers
         this.gameState.covers = gameConfig.cover.layouts.map(c => ({...c, health: 100}));
         
-        // Send game start to all players
+        // Reset player states
         const playerArray = Array.from(this.players.values());
+        playerArray.forEach((player) => {
+            const position = gameConfig.player.startPositions[player.playerIndex];
+            player.x = position.x;
+            player.y = position.y;
+            player.rotation = position.rotation;
+            player.health = gameConfig.player.maxHealth;
+            player.points = 0;
+            player.shield = 0;
+            player.usedPowerups = new Set();
+            player.nextShotType = null;
+            player.reloading = false;
+            player.lastShot = 0;
+            player.velocity = { x: 0, y: 0 };
+        });
+        
+        // Send game start to all players
         playerArray.forEach((player, index) => {
             const otherPlayer = playerArray[1 - index];
             player.ws.send(JSON.stringify({
@@ -245,7 +265,8 @@ class GameRoom {
                     health: player.health,
                     rotation: player.rotation,
                     points: player.points,
-                    usedPowerups: Array.from(player.usedPowerups)
+                    usedPowerups: Array.from(player.usedPowerups),
+                    playerIndex: player.playerIndex
                 },
                 enemyPlayer: {
                     id: otherPlayer.id,
@@ -253,7 +274,8 @@ class GameRoom {
                     x: otherPlayer.x,
                     y: otherPlayer.y,
                     health: otherPlayer.health,
-                    rotation: otherPlayer.rotation
+                    rotation: otherPlayer.rotation,
+                    playerIndex: otherPlayer.playerIndex
                 },
                 covers: this.gameState.covers,
                 arenaSize: {
@@ -263,23 +285,115 @@ class GameRoom {
             }));
         });
 
-        // Start game update loop
-        this.updateInterval = setInterval(() => this.update(), 1000 / 60);
+        // Start game update loop after countdown
+        setTimeout(() => {
+            this.updateInterval = setInterval(() => this.update(), 1000 / 60);
+        }, 5000); // 5 second countdown
+        
         return true;
     }
 
-    checkLineOfSight(x1, y1, x2, y2) {
-        // Check if line of sight is blocked by covers
+    calculateVisiblePoints(x, y, rotation) {
+        // Calculate vision cone for shadow casting
+        const viewDistance = gameConfig.player.viewDistance;
+        const viewAngle = gameConfig.player.viewAngle;
+        const numRays = 180;
+        const visiblePoints = [];
+        
+        for (let i = 0; i < numRays; i++) {
+            const angle = rotation - viewAngle/2 + (viewAngle * i / numRays);
+            const endX = x + Math.cos(angle) * viewDistance;
+            const endY = y + Math.sin(angle) * viewDistance;
+            
+            let closestDistance = viewDistance;
+            let hitPoint = { x: endX, y: endY };
+            
+            // Check intersection with covers
+            for (let cover of this.gameState.covers) {
+                const intersection = this.getRayRectIntersection(x, y, endX, endY, cover);
+                if (intersection) {
+                    const dist = Math.sqrt(
+                        Math.pow(intersection.x - x, 2) + 
+                        Math.pow(intersection.y - y, 2)
+                    );
+                    if (dist < closestDistance) {
+                        closestDistance = dist;
+                        hitPoint = intersection;
+                    }
+                }
+            }
+            
+            visiblePoints.push(hitPoint);
+        }
+        
+        return visiblePoints;
+    }
+
+    getRayRectIntersection(x1, y1, x2, y2, rect) {
+        const edges = [
+            { x1: rect.x, y1: rect.y, x2: rect.x + rect.width, y2: rect.y },
+            { x1: rect.x + rect.width, y1: rect.y, x2: rect.x + rect.width, y2: rect.y + rect.height },
+            { x1: rect.x + rect.width, y1: rect.y + rect.height, x2: rect.x, y2: rect.y + rect.height },
+            { x1: rect.x, y1: rect.y + rect.height, x2: rect.x, y2: rect.y }
+        ];
+        
+        let closestIntersection = null;
+        let minDistance = Infinity;
+        
+        for (let edge of edges) {
+            const intersection = this.getLineIntersection(x1, y1, x2, y2, edge.x1, edge.y1, edge.x2, edge.y2);
+            if (intersection) {
+                const distance = Math.sqrt(
+                    Math.pow(intersection.x - x1, 2) + 
+                    Math.pow(intersection.y - y1, 2)
+                );
+                if (distance < minDistance) {
+                    minDistance = distance;
+                    closestIntersection = intersection;
+                }
+            }
+        }
+        
+        return closestIntersection;
+    }
+
+    getLineIntersection(x1, y1, x2, y2, x3, y3, x4, y4) {
+        const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
+        if (Math.abs(denom) < 0.0001) return null;
+        
+        const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
+        const u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom;
+        
+        if (t >= 0 && t <= 1 && u >= 0 && u <= 1) {
+            return {
+                x: x1 + t * (x2 - x1),
+                y: y1 + t * (y2 - y1)
+            };
+        }
+        
+        return null;
+    }
+
+    isPointInVisibleArea(targetX, targetY, viewerX, viewerY, rotation) {
+        // Check if point is within view distance
+        const distance = Math.sqrt(
+            Math.pow(targetX - viewerX, 2) + 
+            Math.pow(targetY - viewerY, 2)
+        );
+        
+        if (distance > gameConfig.player.viewDistance) return false;
+        
+        // Check if line of sight is blocked
         for (let cover of this.gameState.covers) {
-            if (this.lineIntersectsRect(x1, y1, x2, y2, cover)) {
+            if (this.lineIntersectsRect(viewerX, viewerY, targetX, targetY, cover)) {
                 return false;
             }
         }
+        
         return true;
     }
 
     lineIntersectsRect(x1, y1, x2, y2, rect) {
-        // Check if line intersects with any of the rectangle's edges
         const lines = [
             {x1: rect.x, y1: rect.y, x2: rect.x + rect.width, y2: rect.y},
             {x1: rect.x, y1: rect.y, x2: rect.x, y2: rect.y + rect.height},
@@ -288,21 +402,11 @@ class GameRoom {
         ];
         
         for (let line of lines) {
-            if (this.lineIntersectsLine(x1, y1, x2, y2, line.x1, line.y1, line.x2, line.y2)) {
+            if (this.getLineIntersection(x1, y1, x2, y2, line.x1, line.y1, line.x2, line.y2)) {
                 return true;
             }
         }
         return false;
-    }
-
-    lineIntersectsLine(x1, y1, x2, y2, x3, y3, x4, y4) {
-        const denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4);
-        if (Math.abs(denom) < 0.0001) return false;
-        
-        const t = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom;
-        const u = -((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom;
-        
-        return t >= 0 && t <= 1 && u >= 0 && u <= 1;
     }
 
     update() {
@@ -315,14 +419,18 @@ class GameRoom {
         if (playerArray.length === 2) {
             const [player1, player2] = playerArray;
             
-            // Check line of sight between players
-            const hasLineOfSight = this.checkLineOfSight(
+            // Check if players can see each other
+            player1.visibleToEnemy = this.isPointInVisibleArea(
+                player2.x, player2.y, 
                 player1.x, player1.y, 
-                player2.x, player2.y
+                player1.rotation
             );
             
-            player1.visibleToEnemy = hasLineOfSight;
-            player2.visibleToEnemy = hasLineOfSight;
+            player2.visibleToEnemy = this.isPointInVisibleArea(
+                player1.x, player1.y,
+                player2.x, player2.y,
+                player2.rotation
+            );
         }
 
         // Update projectiles
@@ -392,6 +500,7 @@ class GameRoom {
         // Send personalized state updates to each player
         for (let [id, player] of this.players) {
             const otherPlayers = {};
+            const visiblePoints = this.calculateVisiblePoints(player.x, player.y, player.rotation);
             
             for (let [otherId, otherPlayer] of this.players) {
                 if (otherId !== id) {
@@ -429,20 +538,23 @@ class GameRoom {
                 }
             }
 
-            player.ws.send(JSON.stringify({
-                type: 'gameState',
-                state: {
-                    players: otherPlayers,
-                    projectiles: this.gameState.projectiles.map(p => ({
-                        x: p.x,
-                        y: p.y,
-                        type: p.type,
-                        color: p.color
-                    })),
-                    covers: this.gameState.covers,
-                    explosions: this.gameState.explosions
-                }
-            }));
+            if (player.ws.readyState === WebSocket.OPEN) {
+                player.ws.send(JSON.stringify({
+                    type: 'gameState',
+                    state: {
+                        players: otherPlayers,
+                        projectiles: this.gameState.projectiles.map(p => ({
+                            x: p.x,
+                            y: p.y,
+                            type: p.type,
+                            color: p.color
+                        })),
+                        covers: this.gameState.covers,
+                        explosions: this.gameState.explosions,
+                        visiblePoints: visiblePoints
+                    }
+                }));
+            }
         }
 
         // Clear explosions after sending
@@ -453,9 +565,25 @@ class GameRoom {
         const player = this.players.get(playerId);
         if (!player) return;
 
-        const speed = gameConfig.player.speed * deltaTime;
-        let newX = player.x + dx * speed;
-        let newY = player.y + dy * speed;
+        // Apply acceleration
+        const acceleration = gameConfig.player.acceleration * deltaTime;
+        player.velocity.x += dx * acceleration;
+        player.velocity.y += dy * acceleration;
+
+        // Apply friction
+        player.velocity.x *= gameConfig.player.friction;
+        player.velocity.y *= gameConfig.player.friction;
+
+        // Limit to max speed
+        const speed = Math.sqrt(player.velocity.x * player.velocity.x + player.velocity.y * player.velocity.y);
+        if (speed > gameConfig.player.speed) {
+            player.velocity.x = (player.velocity.x / speed) * gameConfig.player.speed;
+            player.velocity.y = (player.velocity.y / speed) * gameConfig.player.speed;
+        }
+
+        // Calculate new position
+        let newX = player.x + player.velocity.x * deltaTime;
+        let newY = player.y + player.velocity.y * deltaTime;
 
         const halfSize = gameConfig.player.size / 2;
 
@@ -468,6 +596,7 @@ class GameRoom {
                     cover
                 )) {
                     canMoveX = false;
+                    player.velocity.x = 0;
                     break;
                 }
             }
@@ -475,6 +604,8 @@ class GameRoom {
                 player.x = newX;
                 this.stats.recordMovement(playerId, newX, player.y);
             }
+        } else {
+            player.velocity.x = 0;
         }
 
         // Check Y movement separately for sliding collision
@@ -486,6 +617,7 @@ class GameRoom {
                     cover
                 )) {
                     canMoveY = false;
+                    player.velocity.y = 0;
                     break;
                 }
             }
@@ -493,11 +625,13 @@ class GameRoom {
                 player.y = newY;
                 this.stats.recordMovement(playerId, player.x, newY);
             }
+        } else {
+            player.velocity.y = 0;
         }
 
         // Update rotation based on movement direction
-        if (dx !== 0 || dy !== 0) {
-            player.rotation = Math.atan2(dy, dx);
+        if (Math.abs(player.velocity.x) > 1 || Math.abs(player.velocity.y) > 1) {
+            player.rotation = Math.atan2(player.velocity.y, player.velocity.x);
         }
     }
 
@@ -567,7 +701,14 @@ class GameRoom {
 
             this.gameState.projectiles.push(projectile);
             
-            // Send immediate projectile creation event
+            // Calculate flight time
+            const distance = Math.sqrt(
+                Math.pow(targetX - projectile.x, 2) + 
+                Math.pow(targetY - projectile.y, 2)
+            );
+            const flightTime = distance / speed;
+            
+            // Send immediate projectile creation event with target info
             this.broadcast({
                 type: 'projectileCreated',
                 projectile: {
@@ -578,7 +719,8 @@ class GameRoom {
                     type: projectile.type,
                     color: projectile.color,
                     targetX: targetX,
-                    targetY: targetY
+                    targetY: targetY,
+                    flightTime: flightTime
                 }
             });
         }
@@ -674,19 +816,21 @@ class GameRoom {
 
         if (success) {
             // Send confirmation to player
-            player.ws.send(JSON.stringify({
-                type: 'powerupConfirmed',
-                powerupNum: powerupNum,
-                newPoints: player.points,
-                usedPowerups: Array.from(player.usedPowerups)
-            }));
+            if (player.ws.readyState === WebSocket.OPEN) {
+                player.ws.send(JSON.stringify({
+                    type: 'powerupConfirmed',
+                    powerupNum: powerupNum,
+                    newPoints: player.points,
+                    usedPowerups: Array.from(player.usedPowerups)
+                }));
+            }
         }
 
         return { success };
     }
 
     handleRematchVote(playerId) {
-        if (!this.gameState.started || !this.matchEndTime) {
+        if (!this.matchEndTime) {
             return { success: false, error: 'No game to rematch' };
         }
 
@@ -701,24 +845,9 @@ class GameRoom {
 
         // If both players voted, start new game
         if (this.rematchVotes.size === 2) {
-            // Reset players
-            const playerArray = Array.from(this.players.values());
-            playerArray.forEach((player, index) => {
-                const position = gameConfig.player.startPositions[index];
-                player.x = position.x;
-                player.y = position.y;
-                player.health = gameConfig.player.maxHealth;
-                player.points = 0;
-                player.shield = 0;
-                player.usedPowerups.clear();
-                player.nextShotType = null;
-                player.reloading = false;
-                player.lastShot = 0;
-            });
-
             // Reset stats
             this.stats = new GameStatistics();
-            playerArray.forEach(player => {
+            Array.from(this.players.values()).forEach(player => {
                 this.stats.initPlayer(player.id);
             });
 
@@ -892,8 +1021,12 @@ class GameRoom {
     broadcast(data) {
         const message = JSON.stringify(data);
         for (let [id, player] of this.players) {
-            if (player.ws.readyState === WebSocket.OPEN) {
-                player.ws.send(message);
+            if (player.ws && player.ws.readyState === WebSocket.OPEN) {
+                try {
+                    player.ws.send(message);
+                } catch (error) {
+                    console.error(`Failed to send to player ${id}:`, error);
+                }
             }
         }
     }
